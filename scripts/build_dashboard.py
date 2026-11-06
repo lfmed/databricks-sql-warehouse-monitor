@@ -26,11 +26,11 @@ DISPLAY = {
 
 MEASURES = {
     "ds_hora": [
-        {"displayName": "Queries", "expression": "SUM(`queries`)"},
-        {"displayName": "Pct Fila", "expression": "SUM(`enfileiradas`) * 1.0 / NULLIF(SUM(`queries`), 0)"},
-        {"displayName": "Espera Media Fila", "expression": "COALESCE(SUM(`fila_total_s`) / NULLIF(SUM(`enfileiradas`), 0), 0)"},
-        {"displayName": "Pct Falha", "expression": "SUM(`falhas`) * 1.0 / NULLIF(SUM(`queries`), 0)"},
-        {"displayName": "Duracao Media", "expression": "SUM(`duracao_total_s`) / NULLIF(SUM(`queries`), 0)"},
+        {"displayName": "m_total_queries", "expression": "SUM(`queries`)"},
+        {"displayName": "m_pct_fila", "expression": "SUM(`enfileiradas`) * 1.0 / NULLIF(SUM(`queries`), 0)"},
+        {"displayName": "m_espera_media_fila", "expression": "COALESCE(SUM(`fila_total_s`) / NULLIF(SUM(`enfileiradas`), 0), 0)"},
+        {"displayName": "m_pct_falha", "expression": "SUM(`falhas`) * 1.0 / NULLIF(SUM(`queries`), 0)"},
+        {"displayName": "m_duracao_media", "expression": "SUM(`duracao_total_s`) / NULLIF(SUM(`queries`), 0)"},
     ]
 }
 
@@ -154,14 +154,14 @@ main.append(text("header", [
 
 # KPIs
 main += [
-    counter_measure("kpi_queries", "Queries", "Queries", NUM0, "Total no periodo", pos(0, 2, 2, 3)),
-    counter_measure("kpi_pct_fila", "% com fila", "Pct Fila", PCT, "Queries que esperaram slot", pos(2, 2, 2, 3)),
-    counter_measure("kpi_espera_fila", "Espera media na fila", "Espera Media Fila", SEC,
+    counter_measure("kpi_queries", "Queries", "m_total_queries", NUM0, "Total no periodo", pos(0, 2, 2, 3)),
+    counter_measure("kpi_pct_fila", "% com fila", "m_pct_fila", PCT, "Queries que esperaram slot", pos(2, 2, 2, 3)),
+    counter_measure("kpi_espera_fila", "Espera media na fila", "m_espera_media_fila", SEC,
                     "Media das queries enfileiradas", pos(4, 2, 2, 3)),
     counter_simple("kpi_pico", "Pico de concorrencia", "ds_concorrencia", "MAX", "pico_concorrencia",
                    {"type": "number", "decimalPlaces": {"type": "max", "places": 0}},
                    "Max. queries simultaneas", pos(6, 2, 2, 3), period="hora"),
-    counter_measure("kpi_pct_falha", "% de falhas", "Pct Falha", PCT, "Queries com status FAILED", pos(8, 2, 2, 3)),
+    counter_measure("kpi_pct_falha", "% de falhas", "m_pct_falha", PCT, "Queries com status FAILED", pos(8, 2, 2, 3)),
     counter_simple("kpi_custo", "Custo (lista)", "ds_custo", "SUM", "custo_usd", USD,
                    "Estimado a preco de lista", pos(10, 2, 2, 3), period="dia"),
 ]
@@ -176,7 +176,7 @@ main.append(chart("volume_hora", "line", "Queries x queries enfileiradas (por ho
 
 # Fila + concorrencia
 main.append(chart("fila_hora", "line", "Tempo de fila por hora (s)", "ds_hora", "hora", [
-    ("measure(Espera Media Fila)", "MEASURE(`Espera Media Fila`)", "Espera media (enfileiradas)"),
+    ("measure(m_espera_media_fila)", "MEASURE(`m_espera_media_fila`)", "Espera media (enfileiradas)"),
     ("max(fila_max_s)", "MAX(`fila_max_s`)", "Maior espera"),
 ], pos(0, 12, 6, 6), disagg=False, yfmt=SEC, desc="Espera por slot livre (warehouse no limite)"))
 main.append(chart("concorrencia_hora", "line", "Pico de queries simultaneas (por hora)", "ds_concorrencia", "hora", [

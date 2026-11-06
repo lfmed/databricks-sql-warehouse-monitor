@@ -100,23 +100,23 @@
       ],
       "columns": [
         {
-          "displayName": "Queries",
+          "displayName": "m_total_queries",
           "expression": "SUM(`queries`)"
         },
         {
-          "displayName": "Pct Fila",
+          "displayName": "m_pct_fila",
           "expression": "SUM(`enfileiradas`) * 1.0 / NULLIF(SUM(`queries`), 0)"
         },
         {
-          "displayName": "Espera Media Fila",
+          "displayName": "m_espera_media_fila",
           "expression": "COALESCE(SUM(`fila_total_s`) / NULLIF(SUM(`enfileiradas`), 0), 0)"
         },
         {
-          "displayName": "Pct Falha",
+          "displayName": "m_pct_falha",
           "expression": "SUM(`falhas`) * 1.0 / NULLIF(SUM(`queries`), 0)"
         },
         {
-          "displayName": "Duracao Media",
+          "displayName": "m_duracao_media",
           "expression": "SUM(`duracao_total_s`) / NULLIF(SUM(`queries`), 0)"
         }
       ]
@@ -558,8 +558,8 @@
                   "datasetName": "ds_hora",
                   "fields": [
                     {
-                      "name": "measure(Queries)",
-                      "expression": "MEASURE(`Queries`)"
+                      "name": "measure(m_total_queries)",
+                      "expression": "MEASURE(`m_total_queries`)"
                     },
                     {
                       "name": "daily(hora)",
@@ -575,7 +575,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "measure(Queries)",
+                  "fieldName": "measure(m_total_queries)",
                   "displayName": "Queries",
                   "format": {
                     "type": "number",
@@ -615,8 +615,8 @@
                   "datasetName": "ds_hora",
                   "fields": [
                     {
-                      "name": "measure(Pct Fila)",
-                      "expression": "MEASURE(`Pct Fila`)"
+                      "name": "measure(m_pct_fila)",
+                      "expression": "MEASURE(`m_pct_fila`)"
                     },
                     {
                       "name": "daily(hora)",
@@ -632,7 +632,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "measure(Pct Fila)",
+                  "fieldName": "measure(m_pct_fila)",
                   "displayName": "% com fila",
                   "format": {
                     "type": "number-percent",
@@ -671,8 +671,8 @@
                   "datasetName": "ds_hora",
                   "fields": [
                     {
-                      "name": "measure(Espera Media Fila)",
-                      "expression": "MEASURE(`Espera Media Fila`)"
+                      "name": "measure(m_espera_media_fila)",
+                      "expression": "MEASURE(`m_espera_media_fila`)"
                     },
                     {
                       "name": "daily(hora)",
@@ -688,7 +688,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "measure(Espera Media Fila)",
+                  "fieldName": "measure(m_espera_media_fila)",
                   "displayName": "Espera media na fila",
                   "format": {
                     "type": "number-plain",
@@ -784,8 +784,8 @@
                   "datasetName": "ds_hora",
                   "fields": [
                     {
-                      "name": "measure(Pct Falha)",
-                      "expression": "MEASURE(`Pct Falha`)"
+                      "name": "measure(m_pct_falha)",
+                      "expression": "MEASURE(`m_pct_falha`)"
                     },
                     {
                       "name": "daily(hora)",
@@ -801,7 +801,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "measure(Pct Falha)",
+                  "fieldName": "measure(m_pct_falha)",
                   "displayName": "% de falhas",
                   "format": {
                     "type": "number-percent",
@@ -1038,8 +1038,8 @@
                       "expression": "`hora`"
                     },
                     {
-                      "name": "measure(Espera Media Fila)",
-                      "expression": "MEASURE(`Espera Media Fila`)"
+                      "name": "measure(m_espera_media_fila)",
+                      "expression": "MEASURE(`m_espera_media_fila`)"
                     },
                     {
                       "name": "max(fila_max_s)",
@@ -1067,7 +1067,7 @@
                   },
                   "fields": [
                     {
-                      "fieldName": "measure(Espera Media Fila)",
+                      "fieldName": "measure(m_espera_media_fila)",
                       "displayName": "Espera media (enfileiradas)"
                     },
                     {
