@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.claude-sessions.log
+.DS_Store

@@ -1,0 +1,2003 @@
+{
+  "datasets": [
+    {
+      "name": "ds_warehouses",
+      "displayName": "Lista de warehouses",
+      "queryLines": [
+        "SELECT CONCAT(warehouse_name, ' | ', warehouse_id) AS warehouse\n",
+        "FROM system.compute.warehouses\n",
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY warehouse_id ORDER BY change_time DESC) = 1\n",
+        "  AND delete_time IS NULL\n",
+        "ORDER BY 1\n"
+      ]
+    },
+    {
+      "name": "ds_config",
+      "displayName": "Configuracao do warehouse",
+      "queryLines": [
+        "SELECT warehouse_name, warehouse_id, warehouse_type, warehouse_size,\n",
+        "       min_clusters, max_clusters, auto_stop_minutes, warehouse_channel AS channel\n",
+        "FROM system.compute.warehouses\n",
+        "WHERE warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY warehouse_id ORDER BY change_time DESC) = 1\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_hora",
+      "displayName": "Metricas por hora",
+      "queryLines": [
+        "SELECT\n",
+        "  DATE_TRUNC('HOUR', start_time)                                    AS hora,\n",
+        "  COUNT(*)                                                          AS queries,\n",
+        "  COUNT_IF(execution_status = 'FAILED')                             AS falhas,\n",
+        "  COUNT_IF(execution_status = 'CANCELED')                           AS canceladas,\n",
+        "  COUNT_IF(COALESCE(waiting_at_capacity_duration_ms, 0) > 0)        AS enfileiradas,\n",
+        "  SUM(COALESCE(waiting_at_capacity_duration_ms, 0)) / 1000          AS fila_total_s,\n",
+        "  SUM(COALESCE(waiting_for_compute_duration_ms, 0)) / 1000          AS espera_compute_total_s,\n",
+        "  SUM(total_duration_ms) / 1000                                     AS duracao_total_s,\n",
+        "  PERCENTILE_APPROX(COALESCE(waiting_at_capacity_duration_ms, 0), 0.95) / 1000 AS fila_p95_s,\n",
+        "  MAX(COALESCE(waiting_at_capacity_duration_ms, 0)) / 1000          AS fila_max_s,\n",
+        "  PERCENTILE_APPROX(total_duration_ms, 0.95) / 1000                 AS duracao_p95_s,\n",
+        "  COUNT_IF(from_result_cache)                                       AS cache_hits,\n",
+        "  COUNT_IF(spilled_local_bytes > 0)                                 AS com_spill\n",
+        "FROM system.query.history\n",
+        "WHERE compute.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND start_time >= :periodo.min\n",
+        "  AND start_time < DATE_ADD(:periodo.max, 1)\n",
+        "GROUP BY 1\n",
+        "ORDER BY 1\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "Queries",
+          "expression": "SUM(`queries`)"
+        },
+        {
+          "displayName": "Pct Fila",
+          "expression": "SUM(`enfileiradas`) * 1.0 / NULLIF(SUM(`queries`), 0)"
+        },
+        {
+          "displayName": "Espera Media Fila",
+          "expression": "COALESCE(SUM(`fila_total_s`) / NULLIF(SUM(`enfileiradas`), 0), 0)"
+        },
+        {
+          "displayName": "Pct Falha",
+          "expression": "SUM(`falhas`) * 1.0 / NULLIF(SUM(`queries`), 0)"
+        },
+        {
+          "displayName": "Duracao Media",
+          "expression": "SUM(`duracao_total_s`) / NULLIF(SUM(`queries`), 0)"
+        }
+      ]
+    },
+    {
+      "name": "ds_concorrencia",
+      "displayName": "Concorrencia por hora",
+      "queryLines": [
+        "WITH q AS (\n",
+        "  SELECT start_time, end_time\n",
+        "  FROM system.query.history\n",
+        "  WHERE compute.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND start_time >= :periodo.min\n",
+        "  AND start_time < DATE_ADD(:periodo.max, 1)\n",
+        "    AND end_time IS NOT NULL\n",
+        "),\n",
+        "ev AS (\n",
+        "  SELECT start_time AS ts, 1 AS d FROM q\n",
+        "  UNION ALL\n",
+        "  SELECT end_time AS ts, -1 AS d FROM q\n",
+        "),\n",
+        "corr AS (\n",
+        "  SELECT ts, SUM(d) OVER (ORDER BY ts, d ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ativas\n",
+        "  FROM ev\n",
+        ")\n",
+        "SELECT DATE_TRUNC('HOUR', ts) AS hora, MAX(ativas) AS pico_concorrencia\n",
+        "FROM corr\n",
+        "WHERE ts < DATE_ADD(:periodo.max, 1)\n",
+        "GROUP BY 1\n",
+        "ORDER BY 1\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_clusters",
+      "displayName": "Eventos de escalonamento",
+      "queryLines": [
+        "SELECT e.event_time, e.event_type, e.cluster_count,\n",
+        "       c.max_clusters\n",
+        "FROM system.compute.warehouse_events e\n",
+        "LEFT JOIN (\n",
+        "  SELECT warehouse_id, max_clusters\n",
+        "  FROM system.compute.warehouses\n",
+        "  WHERE warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY warehouse_id ORDER BY change_time DESC) = 1\n",
+        ") c ON e.warehouse_id = c.warehouse_id\n",
+        "WHERE e.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND e.event_time >= :periodo.min\n",
+        "  AND e.event_time < DATE_ADD(:periodo.max, 1)\n",
+        "ORDER BY e.event_time\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_custo",
+      "displayName": "Custo diario",
+      "queryLines": [
+        "SELECT\n",
+        "  u.usage_date                                         AS dia,\n",
+        "  SUM(u.usage_quantity)                                AS dbus,\n",
+        "  SUM(u.usage_quantity * COALESCE(p.pricing.effective_list.default, p.pricing.default)) AS custo_usd\n",
+        "FROM system.billing.usage u\n",
+        "LEFT JOIN system.billing.list_prices p\n",
+        "  ON  u.sku_name   = p.sku_name\n",
+        "  AND u.cloud      = p.cloud\n",
+        "  AND u.usage_unit = p.usage_unit\n",
+        "  AND u.usage_start_time >= p.price_start_time\n",
+        "  AND (p.price_end_time IS NULL OR u.usage_start_time < p.price_end_time)\n",
+        "WHERE u.usage_metadata.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND u.usage_date >= :periodo.min\n",
+        "  AND u.usage_date <= :periodo.max\n",
+        "GROUP BY 1\n",
+        "ORDER BY 1\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_saude",
+      "displayName": "Semaforo de saude",
+      "queryLines": [
+        "WITH q AS (\n",
+        "  SELECT * FROM system.query.history\n",
+        "  WHERE compute.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND start_time >= :periodo.min\n",
+        "  AND start_time < DATE_ADD(:periodo.max, 1)\n",
+        "),\n",
+        "m AS (\n",
+        "  SELECT\n",
+        "    COUNT(*) AS n,\n",
+        "    COUNT_IF(COALESCE(waiting_at_capacity_duration_ms, 0) > 0) / NULLIF(COUNT(*), 0) AS pct_fila,\n",
+        "    PERCENTILE_APPROX(COALESCE(waiting_at_capacity_duration_ms, 0), 0.95) / 1000 AS fila_p95_s,\n",
+        "    COALESCE(AVG(CASE WHEN waiting_at_capacity_duration_ms > 0 THEN waiting_at_capacity_duration_ms END), 0) / 1000 AS fila_media_s,\n",
+        "    COUNT_IF(execution_status = 'FAILED') / NULLIF(COUNT(*), 0) AS pct_falha,\n",
+        "    PERCENTILE_APPROX(total_duration_ms, 0.95) / 1000 AS duracao_p95_s,\n",
+        "    AVG(COALESCE(waiting_for_compute_duration_ms, 0)) / 1000 AS espera_compute_media_s,\n",
+        "    COUNT_IF(spilled_local_bytes > 0) / NULLIF(COUNT(*), 0) AS pct_spill\n",
+        "  FROM q\n",
+        "),\n",
+        "cl AS (\n",
+        "  SELECT MAX(cluster_count) AS max_atingido\n",
+        "  FROM system.compute.warehouse_events\n",
+        "  WHERE warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "    AND event_time >= :periodo.min AND event_time < DATE_ADD(:periodo.max, 1)\n",
+        "),\n",
+        "cfg AS (\n",
+        "  SELECT max_clusters FROM system.compute.warehouses\n",
+        "  WHERE warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY warehouse_id ORDER BY change_time DESC) = 1\n",
+        "),\n",
+        "ind AS (\n",
+        "  SELECT 1 AS ordem, '% de queries que entraram na fila' AS indicador,\n",
+        "         CONCAT(FORMAT_NUMBER(pct_fila * 100, 1), '%') AS valor,\n",
+        "         CASE WHEN pct_fila < 0.05 THEN 0 WHEN pct_fila < 0.15 THEN 1 ELSE 2 END AS nivel,\n",
+        "         'OK < 5% | Atencao < 15%' AS referencia FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 2, 'Tempo de fila p95',\n",
+        "         CONCAT(FORMAT_NUMBER(fila_p95_s, 1), ' s'),\n",
+        "         CASE WHEN fila_p95_s < 5 THEN 0 WHEN fila_p95_s < 30 THEN 1 ELSE 2 END,\n",
+        "         'OK < 5 s | Atencao < 30 s' FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 3, 'Espera media (so queries enfileiradas)',\n",
+        "         CONCAT(FORMAT_NUMBER(fila_media_s, 1), ' s'),\n",
+        "         CASE WHEN fila_media_s < 10 THEN 0 WHEN fila_media_s < 60 THEN 1 ELSE 2 END,\n",
+        "         'OK < 10 s | Atencao < 60 s' FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 4, 'Uso de clusters (max atingido / max config.)',\n",
+        "         CONCAT(COALESCE(cl.max_atingido, 0), ' / ', COALESCE(cfg.max_clusters, 0)),\n",
+        "         CASE WHEN COALESCE(cl.max_atingido, 0) < COALESCE(cfg.max_clusters, 0) THEN 0\n",
+        "              WHEN m.pct_fila >= 0.05 THEN 2 ELSE 1 END,\n",
+        "         'Bateu no teto + fila = aumentar max clusters' FROM m CROSS JOIN cl CROSS JOIN cfg\n",
+        "  UNION ALL\n",
+        "  SELECT 5, '% de queries com falha',\n",
+        "         CONCAT(FORMAT_NUMBER(pct_falha * 100, 2), '%'),\n",
+        "         CASE WHEN pct_falha < 0.02 THEN 0 WHEN pct_falha < 0.05 THEN 1 ELSE 2 END,\n",
+        "         'OK < 2% | Atencao < 5%' FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 6, 'Duracao total p95',\n",
+        "         CONCAT(FORMAT_NUMBER(duracao_p95_s, 1), ' s'),\n",
+        "         CASE WHEN duracao_p95_s < 30 THEN 0 WHEN duracao_p95_s < 120 THEN 1 ELSE 2 END,\n",
+        "         'OK < 30 s | Atencao < 120 s' FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 7, 'Espera media por compute (start/scale)',\n",
+        "         CONCAT(FORMAT_NUMBER(espera_compute_media_s, 2), ' s'),\n",
+        "         CASE WHEN espera_compute_media_s < 2 THEN 0 WHEN espera_compute_media_s < 10 THEN 1 ELSE 2 END,\n",
+        "         'OK < 2 s | Atencao < 10 s' FROM m\n",
+        "  UNION ALL\n",
+        "  SELECT 8, '% de queries com spill em disco',\n",
+        "         CONCAT(FORMAT_NUMBER(pct_spill * 100, 1), '%'),\n",
+        "         CASE WHEN pct_spill < 0.05 THEN 0 WHEN pct_spill < 0.15 THEN 1 ELSE 2 END,\n",
+        "         'OK < 5% | Atencao < 15% (avaliar tamanho)' FROM m\n",
+        ")\n",
+        "SELECT ordem, indicador, valor, referencia,\n",
+        "       CASE nivel WHEN 0 THEN '🟢 OK' WHEN 1 THEN '🟡 Atencao' ELSE '🔴 Critico' END AS status\n",
+        "FROM ind\n",
+        "ORDER BY ordem\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_top_queries",
+      "displayName": "Top queries",
+      "queryLines": [
+        "SELECT\n",
+        "  statement_id,\n",
+        "  start_time                                                   AS inicio,\n",
+        "  executed_by                                                  AS usuario,\n",
+        "  COALESCE(client_application, '-')                            AS aplicacao,\n",
+        "  execution_status                                             AS status,\n",
+        "  ROUND(COALESCE(waiting_at_capacity_duration_ms, 0) / 1000, 1) AS fila_s,\n",
+        "  ROUND(COALESCE(waiting_for_compute_duration_ms, 0) / 1000, 1) AS espera_compute_s,\n",
+        "  ROUND(COALESCE(execution_duration_ms, 0) / 1000, 1)          AS execucao_s,\n",
+        "  ROUND(total_duration_ms / 1000, 1)                           AS total_s,\n",
+        "  ROUND(COALESCE(read_bytes, 0) / POW(1024, 3), 2)             AS gb_lidos,\n",
+        "  ROUND(COALESCE(spilled_local_bytes, 0) / POW(1024, 3), 2)    AS gb_spill,\n",
+        "  LEFT(statement_text, 200)                                    AS query\n",
+        "FROM system.query.history\n",
+        "WHERE compute.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND start_time >= :periodo.min\n",
+        "  AND start_time < DATE_ADD(:periodo.max, 1)\n",
+        "ORDER BY total_duration_ms DESC\n",
+        "LIMIT 100\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ds_usuarios",
+      "displayName": "Por usuario",
+      "queryLines": [
+        "SELECT\n",
+        "  executed_by                                                  AS usuario,\n",
+        "  COALESCE(client_application, '-')                            AS aplicacao,\n",
+        "  COUNT(*)                                                     AS queries,\n",
+        "  COUNT_IF(execution_status = 'FAILED')                        AS falhas,\n",
+        "  COUNT_IF(COALESCE(waiting_at_capacity_duration_ms, 0) > 0)   AS enfileiradas,\n",
+        "  ROUND(SUM(COALESCE(waiting_at_capacity_duration_ms, 0)) / 60000, 1) AS minutos_em_fila,\n",
+        "  ROUND(SUM(COALESCE(total_task_duration_ms, 0)) / 3600000, 2) AS horas_cpu,\n",
+        "  ROUND(PERCENTILE_APPROX(total_duration_ms, 0.95) / 1000, 1)  AS duracao_p95_s\n",
+        "FROM system.query.history\n",
+        "WHERE compute.warehouse_id = TRIM(SUBSTRING_INDEX(:warehouse, '|', -1))\n",
+        "  AND start_time >= :periodo.min\n",
+        "  AND start_time < DATE_ADD(:periodo.max, 1)\n",
+        "GROUP BY ALL\n",
+        "ORDER BY horas_cpu DESC\n",
+        "LIMIT 200\n"
+      ],
+      "parameters": [
+        {
+          "keyword": "warehouse",
+          "displayName": "warehouse",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "keyword": "periodo",
+          "displayName": "periodo",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-7d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "visao_geral",
+      "displayName": "Visao geral",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Monitoramento de SQL Warehouse\n",
+                "\n",
+                "Selecione o **warehouse** e o **periodo** nos filtros (topo). Comece pelo **Semaforo**: 🟢 saudavel, 🟡 atencao, 🔴 agir. Fonte: system tables (`system.query.history`, `system.compute.*`, `system.billing.*`), latencia de alguns minutos."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_queries",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "measure(Queries)",
+                      "expression": "MEASURE(`Queries`)"
+                    },
+                    {
+                      "name": "daily(hora)",
+                      "expression": "DATE_TRUNC(\"DAY\", `hora`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Queries)",
+                  "displayName": "Queries",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(hora)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Queries",
+                "description": "Total no periodo",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_pct_fila",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "measure(Pct Fila)",
+                      "expression": "MEASURE(`Pct Fila`)"
+                    },
+                    {
+                      "name": "daily(hora)",
+                      "expression": "DATE_TRUNC(\"DAY\", `hora`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Pct Fila)",
+                  "displayName": "% com fila",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(hora)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "% com fila",
+                "description": "Queries que esperaram slot",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_espera_fila",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "measure(Espera Media Fila)",
+                      "expression": "MEASURE(`Espera Media Fila`)"
+                    },
+                    {
+                      "name": "daily(hora)",
+                      "expression": "DATE_TRUNC(\"DAY\", `hora`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Espera Media Fila)",
+                  "displayName": "Espera media na fila",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "suffix": " s"
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(hora)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Espera media na fila",
+                "description": "Media das queries enfileiradas",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_pico",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_concorrencia",
+                  "fields": [
+                    {
+                      "name": "max(pico_concorrencia)",
+                      "expression": "MAX(`pico_concorrencia`)"
+                    },
+                    {
+                      "name": "daily(hora)",
+                      "expression": "DATE_TRUNC(\"DAY\", `hora`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(pico_concorrencia)",
+                  "displayName": "Pico de concorrencia",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(hora)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pico de concorrencia",
+                "description": "Max. queries simultaneas",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_pct_falha",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "measure(Pct Falha)",
+                      "expression": "MEASURE(`Pct Falha`)"
+                    },
+                    {
+                      "name": "daily(hora)",
+                      "expression": "DATE_TRUNC(\"DAY\", `hora`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Pct Falha)",
+                  "displayName": "% de falhas",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(hora)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "% de falhas",
+                "description": "Queries com status FAILED",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_custo",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_custo",
+                  "fields": [
+                    {
+                      "name": "sum(custo_usd)",
+                      "expression": "SUM(`custo_usd`)"
+                    },
+                    {
+                      "name": "daily(dia)",
+                      "expression": "DATE_TRUNC(\"DAY\", `dia`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(custo_usd)",
+                  "displayName": "Custo (lista)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(dia)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Custo (lista)",
+                "description": "Estimado a preco de lista",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "semaforo",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_saude",
+                  "fields": [
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "indicador",
+                      "expression": "`indicador`"
+                    },
+                    {
+                      "name": "valor",
+                      "expression": "`valor`"
+                    },
+                    {
+                      "name": "referencia",
+                      "expression": "`referencia`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "status",
+                    "displayName": "Status"
+                  },
+                  {
+                    "fieldName": "indicador",
+                    "displayName": "Indicador"
+                  },
+                  {
+                    "fieldName": "valor",
+                    "displayName": "Valor"
+                  },
+                  {
+                    "fieldName": "referencia",
+                    "displayName": "Referencia"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Semaforo de saude",
+                "description": "Indicadores consolidados do periodo com limites de referencia",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "volume_hora",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "hora",
+                      "expression": "`hora`"
+                    },
+                    {
+                      "name": "queries",
+                      "expression": "`queries`"
+                    },
+                    {
+                      "name": "enfileiradas",
+                      "expression": "`enfileiradas`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hora",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": " "
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "queries",
+                      "displayName": "Queries"
+                    },
+                    {
+                      "fieldName": "enfileiradas",
+                      "displayName": "Enfileiradas"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Queries x queries enfileiradas (por hora)",
+                "description": "Picos de enfileiradas indicam falta de capacidade",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 5,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "fila_hora",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "fields": [
+                    {
+                      "name": "hora",
+                      "expression": "`hora`"
+                    },
+                    {
+                      "name": "measure(Espera Media Fila)",
+                      "expression": "MEASURE(`Espera Media Fila`)"
+                    },
+                    {
+                      "name": "max(fila_max_s)",
+                      "expression": "MAX(`fila_max_s`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hora",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": " "
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "measure(Espera Media Fila)",
+                      "displayName": "Espera media (enfileiradas)"
+                    },
+                    {
+                      "fieldName": "max(fila_max_s)",
+                      "displayName": "Maior espera"
+                    }
+                  ],
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "suffix": " s"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Tempo de fila por hora (s)",
+                "description": "Espera por slot livre (warehouse no limite)",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "concorrencia_hora",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_concorrencia",
+                  "fields": [
+                    {
+                      "name": "hora",
+                      "expression": "`hora`"
+                    },
+                    {
+                      "name": "pico_concorrencia",
+                      "expression": "`pico_concorrencia`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hora",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": " "
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fieldName": "pico_concorrencia",
+                  "displayName": "Queries simultaneas"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pico de queries simultaneas (por hora)",
+                "description": "Inclui queries em fila e em execucao",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 12,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "clusters",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_clusters",
+                  "fields": [
+                    {
+                      "name": "event_time",
+                      "expression": "`event_time`"
+                    },
+                    {
+                      "name": "cluster_count",
+                      "expression": "`cluster_count`"
+                    },
+                    {
+                      "name": "max_clusters",
+                      "expression": "`max_clusters`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": " "
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "cluster_count",
+                      "displayName": "Clusters ativos"
+                    },
+                    {
+                      "fieldName": "max_clusters",
+                      "displayName": "Max configurado"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Clusters ativos x maximo configurado",
+                "description": "Se a linha encosta no maximo e ha fila: aumente max clusters",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 18,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "custo_dia",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_custo",
+                  "fields": [
+                    {
+                      "name": "dia",
+                      "expression": "`dia`"
+                    },
+                    {
+                      "name": "custo_usd",
+                      "expression": "`custo_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "dia",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": " "
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fieldName": "custo_usd",
+                  "displayName": "Custo (USD)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Custo diario (USD, preco de lista)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 18,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "config",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_config",
+                  "fields": [
+                    {
+                      "name": "warehouse_name",
+                      "expression": "`warehouse_name`"
+                    },
+                    {
+                      "name": "warehouse_id",
+                      "expression": "`warehouse_id`"
+                    },
+                    {
+                      "name": "warehouse_type",
+                      "expression": "`warehouse_type`"
+                    },
+                    {
+                      "name": "warehouse_size",
+                      "expression": "`warehouse_size`"
+                    },
+                    {
+                      "name": "min_clusters",
+                      "expression": "`min_clusters`"
+                    },
+                    {
+                      "name": "max_clusters",
+                      "expression": "`max_clusters`"
+                    },
+                    {
+                      "name": "auto_stop_minutes",
+                      "expression": "`auto_stop_minutes`"
+                    },
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "warehouse_name",
+                    "displayName": "Nome"
+                  },
+                  {
+                    "fieldName": "warehouse_id",
+                    "displayName": "ID"
+                  },
+                  {
+                    "fieldName": "warehouse_type",
+                    "displayName": "Tipo"
+                  },
+                  {
+                    "fieldName": "warehouse_size",
+                    "displayName": "Tamanho"
+                  },
+                  {
+                    "fieldName": "min_clusters",
+                    "displayName": "Min clusters"
+                  },
+                  {
+                    "fieldName": "max_clusters",
+                    "displayName": "Max clusters"
+                  },
+                  {
+                    "fieldName": "auto_stop_minutes",
+                    "displayName": "Auto stop (min)"
+                  },
+                  {
+                    "fieldName": "channel",
+                    "displayName": "Canal"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Configuracao atual do warehouse"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 24,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "sec_detalhe",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Detalhamento\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 27,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "top_queries",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_top_queries",
+                  "fields": [
+                    {
+                      "name": "inicio",
+                      "expression": "`inicio`"
+                    },
+                    {
+                      "name": "usuario",
+                      "expression": "`usuario`"
+                    },
+                    {
+                      "name": "aplicacao",
+                      "expression": "`aplicacao`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "fila_s",
+                      "expression": "`fila_s`"
+                    },
+                    {
+                      "name": "espera_compute_s",
+                      "expression": "`espera_compute_s`"
+                    },
+                    {
+                      "name": "execucao_s",
+                      "expression": "`execucao_s`"
+                    },
+                    {
+                      "name": "total_s",
+                      "expression": "`total_s`"
+                    },
+                    {
+                      "name": "gb_lidos",
+                      "expression": "`gb_lidos`"
+                    },
+                    {
+                      "name": "gb_spill",
+                      "expression": "`gb_spill`"
+                    },
+                    {
+                      "name": "query",
+                      "expression": "`query`"
+                    },
+                    {
+                      "name": "statement_id",
+                      "expression": "`statement_id`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "inicio",
+                    "displayName": "Inicio"
+                  },
+                  {
+                    "fieldName": "usuario",
+                    "displayName": "Usuario"
+                  },
+                  {
+                    "fieldName": "aplicacao",
+                    "displayName": "Aplicacao"
+                  },
+                  {
+                    "fieldName": "status",
+                    "displayName": "Status"
+                  },
+                  {
+                    "fieldName": "fila_s",
+                    "displayName": "Fila (s)"
+                  },
+                  {
+                    "fieldName": "espera_compute_s",
+                    "displayName": "Espera compute (s)"
+                  },
+                  {
+                    "fieldName": "execucao_s",
+                    "displayName": "Execucao (s)"
+                  },
+                  {
+                    "fieldName": "total_s",
+                    "displayName": "Total (s)"
+                  },
+                  {
+                    "fieldName": "gb_lidos",
+                    "displayName": "GB lidos"
+                  },
+                  {
+                    "fieldName": "gb_spill",
+                    "displayName": "GB spill"
+                  },
+                  {
+                    "fieldName": "query",
+                    "displayName": "Query"
+                  },
+                  {
+                    "fieldName": "statement_id",
+                    "displayName": "Statement ID"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top 100 queries mais longas"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 28,
+            "width": 12,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "usuarios",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_usuarios",
+                  "fields": [
+                    {
+                      "name": "usuario",
+                      "expression": "`usuario`"
+                    },
+                    {
+                      "name": "aplicacao",
+                      "expression": "`aplicacao`"
+                    },
+                    {
+                      "name": "queries",
+                      "expression": "`queries`"
+                    },
+                    {
+                      "name": "falhas",
+                      "expression": "`falhas`"
+                    },
+                    {
+                      "name": "enfileiradas",
+                      "expression": "`enfileiradas`"
+                    },
+                    {
+                      "name": "minutos_em_fila",
+                      "expression": "`minutos_em_fila`"
+                    },
+                    {
+                      "name": "horas_cpu",
+                      "expression": "`horas_cpu`"
+                    },
+                    {
+                      "name": "duracao_p95_s",
+                      "expression": "`duracao_p95_s`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "usuario",
+                    "displayName": "Usuario"
+                  },
+                  {
+                    "fieldName": "aplicacao",
+                    "displayName": "Aplicacao"
+                  },
+                  {
+                    "fieldName": "queries",
+                    "displayName": "Queries"
+                  },
+                  {
+                    "fieldName": "falhas",
+                    "displayName": "Falhas"
+                  },
+                  {
+                    "fieldName": "enfileiradas",
+                    "displayName": "Enfileiradas"
+                  },
+                  {
+                    "fieldName": "minutos_em_fila",
+                    "displayName": "Min. em fila"
+                  },
+                  {
+                    "fieldName": "horas_cpu",
+                    "displayName": "Horas CPU"
+                  },
+                  {
+                    "fieldName": "duracao_p95_s",
+                    "displayName": "Duracao p95 (s)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Consumo por usuario / aplicacao"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 36,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "filtros",
+      "displayName": "Filtros",
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "filtro_warehouse",
+            "queries": [
+              {
+                "name": "q_wh_lista",
+                "query": {
+                  "datasetName": "ds_warehouses",
+                  "fields": [
+                    {
+                      "name": "warehouse",
+                      "expression": "`warehouse`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_config",
+                "query": {
+                  "datasetName": "ds_config",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_hora",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_concorrencia",
+                "query": {
+                  "datasetName": "ds_concorrencia",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_clusters",
+                "query": {
+                  "datasetName": "ds_clusters",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_custo",
+                "query": {
+                  "datasetName": "ds_custo",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_saude",
+                "query": {
+                  "datasetName": "ds_saude",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_top_queries",
+                "query": {
+                  "datasetName": "ds_top_queries",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_wh_ds_usuarios",
+                "query": {
+                  "datasetName": "ds_usuarios",
+                  "parameters": [
+                    {
+                      "name": "warehouse",
+                      "keyword": "warehouse"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "warehouse",
+                    "displayName": "Warehouse",
+                    "queryName": "q_wh_lista"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_config"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_hora"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_concorrencia"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_clusters"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_custo"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_saude"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_top_queries"
+                  },
+                  {
+                    "parameterName": "warehouse",
+                    "queryName": "q_wh_ds_usuarios"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warehouse",
+                "description": "Nome | ID",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_periodo",
+            "queries": [
+              {
+                "name": "q_dt_ds_hora",
+                "query": {
+                  "datasetName": "ds_hora",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_concorrencia",
+                "query": {
+                  "datasetName": "ds_concorrencia",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_clusters",
+                "query": {
+                  "datasetName": "ds_clusters",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_custo",
+                "query": {
+                  "datasetName": "ds_custo",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_saude",
+                "query": {
+                  "datasetName": "ds_saude",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_top_queries",
+                "query": {
+                  "datasetName": "ds_top_queries",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_dt_ds_usuarios",
+                "query": {
+                  "datasetName": "ds_usuarios",
+                  "parameters": [
+                    {
+                      "name": "periodo",
+                      "keyword": "periodo"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_hora"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_concorrencia"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_clusters"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_custo"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_saude"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_top_queries"
+                  },
+                  {
+                    "parameterName": "periodo",
+                    "queryName": "q_dt_ds_usuarios"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Periodo"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 2
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#F7F9FA",
+        "dark": "#1F272D"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "widgetBorderColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "fontColor": {
+        "light": "#11171C",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#2272B4",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#2272B4",
+        "#FF7E5C",
+        "#00A972",
+        "#FFAB00",
+        "#6B4FBB",
+        "#5ADBFF",
+        "#99DDB4"
+      ],
+      "widgetHeaderAlignment": "LEFT",
+      "widgetCornerRadius": 8
+    }
+  }
+}
